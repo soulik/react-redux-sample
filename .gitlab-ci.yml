@@ -1,0 +1,104 @@
+variables:
+  BUILD_IMAGE: node:14
+  DEPLOY_SERVER_APP0: <REDACTED>
+  SERVER_FOLDER_APP0: <REDACTED>
+  DEPLOY_USER_APP0: <REDACTED>
+
+default:
+  tags:
+    - docker
+    - linux
+
+stages:
+  - build
+  - test
+  - deploy
+
+cache:
+  key:
+    files:
+      - package.json
+    prefix: $CI_PROJECT_NAME
+  paths:
+    - node_modules/
+
+build:
+  stage: build
+  image: $BUILD_IMAGE
+  script:
+    - echo "Verify cache"
+    - npm cache verify
+    - echo "Start building App"
+    - CI=false npm install --no-optional
+    - CI=false npm run-script build
+    - echo "Build successfully!"
+  artifacts:
+    expire_in: 7 day
+    paths:
+      - build/
+#  rules:
+#    - changes:
+#        - src/*
+#        - package.json
+#        - package-lock.json
+#        - tsconfig.json
+#        - yarn.lock
+
+test:
+  stage: test
+  needs:
+    - job: build
+      artifacts: false
+  image: $BUILD_IMAGE
+  script:
+    - echo "Testing App"
+    - CI=false npm run test -- --passWithNoTests
+    - echo "Test successfully!"
+
+sonarqube-check:
+  stage: build
+  image:
+    name: sonarsource/sonar-scanner-cli:latest
+    entrypoint: [ "" ]
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+    GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script:
+    - sonar-scanner
+  allow_failure: true
+  only:
+    - develop
+    - main # or the name of your main branch
+
+deploy_app0:
+  stage: deploy
+  image: $BUILD_IMAGE
+  needs:
+    - job: build
+      artifacts: true
+    - job: test
+      artifacts: false
+  environment:
+    name: test
+    url: react-test.app.home
+  before_script:
+    - apt-get update -qq
+    - apt-get install -qq git
+    - "which ssh-agent || ( apt-get install -qq openssh-client )"
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - '[[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config'
+  script:
+    - echo "Deploying to ${DEPLOY_SERVER_APP0}"
+    - scp -r build/* ${DEPLOY_USER_APP0}@${DEPLOY_SERVER_APP0}:${SERVER_FOLDER_APP0}
+    - echo "Finished copying the build files"
+  only:
+    - main
+    - develop
+
